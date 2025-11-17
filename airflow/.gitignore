@@ -1,0 +1,32 @@
+# airflow/.gitignore
+
+# Конфигурационные файлы
+airflow.cfg
+webserver_config.py
+
+# Логи
+logs/
+
+# База данных SQLite (если используется)
+*.db
+
+# Плагины (если генерируются автоматически)
+plugins/__pycache__/
+
+# DAGs временные файлы
+dags/__pycache__/
+dags/*.pyc
+
+# Connections и Variables (не коммитить!)
+connections.env
+variables.env
+
+# Fernet key
+fernet_key
+
+# Плагины с секретами
+plugins/secrets/
+
+# Тестовые данные
+test_dags/
+test_data/

@@ -1,26 +1,35 @@
-# dbt specific
+# dbt/.gitignore
+
+# Компилированные файлы
 target/
-dbt_packages/
+target/*
+!target/.gitkeep
+
+# Логи
 logs/
 dbt.log
 
-# Profiles (NEVER commit!)
+# Пакеты
+dbt_packages/
+
+# Файлы манифеста (можно коммитить, но часто игнорируют в dev)
+manifest.json
+run_results.json
+
+# Профили (НИКОГДА не коммитить!)
 profiles.yml
 *.profiles.yml
 
-# Environment files
-.env
-.env.local
+# Скрытые файлы OS
+.DS_Store
 
 # IDE
 .vscode/
 .idea/
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Temporary files
-*.tmp
-*.temp
+# Временные файлы
 tmp/
+*.tmp
+
+# Тестовые данные
+test_data/
