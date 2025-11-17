@@ -8,7 +8,7 @@ def create_spark_session():
         .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog") \
         .config("spark.sql.catalog.spark_catalog.type", "hadoop") \
         .config("spark.sql.catalog.spark_catalog.warehouse", "s3a://warehouse/") \
-        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000") \
+        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9222") \
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
         .config("spark.hadoop.fs.s3a.secret.key", "minioadmin") \
         .getOrCreate()

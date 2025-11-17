@@ -4,13 +4,13 @@ from pyspark.sql.types import *
 import json
 
 def create_spark_session():
-    return SparkSession.builder \
+     return SparkSession.builder \
         .appName("KafkaToIcebergStreaming") \
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog") \
         .config("spark.sql.catalog.spark_catalog.type", "hadoop") \
         .config("spark.sql.catalog.spark_catalog.warehouse", "s3a://warehouse/") \
-        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000") \
+        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9222") \
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
         .config("spark.hadoop.fs.s3a.secret.key", "minioadmin") \
         .config("spark.hadoop.fs.s3a.path.style.access", "true") \

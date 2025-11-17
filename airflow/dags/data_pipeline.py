@@ -2,9 +2,6 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
-from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-from airflow.providers.http.sensors.http import HttpSensor
-from airflow.models import Variable
 
 default_args = {
     'owner': 'data_team',
@@ -52,6 +49,19 @@ def trigger_dbt_run(**context):
     print("dbt run completed successfully!")
     return True
 
+def check_kafka_connect():
+    """Проверка доступности Kafka Connect"""
+    import requests
+    try:
+        response = requests.get('http://kafka-connect:8083/connectors', timeout=10)
+        if response.status_code == 200:
+            print("Kafka Connect is ready!")
+            return True
+        else:
+            raise Exception(f"Kafka Connect returned status: {response.status_code}")
+    except Exception as e:
+        raise Exception(f"Kafka Connect check failed: {str(e)}")
+
 with DAG(
     'data_processing_pipeline',
     default_args=default_args,
@@ -62,22 +72,28 @@ with DAG(
 ) as dag:
 
     # 1. Проверка доступности сервисов
-    check_services = HttpSensor(
+    check_services = PythonOperator(
         task_id='check_kafka_connect',
-        http_conn_id='kafka_connect',
-        endpoint='/connectors',
-        response_check=lambda response: response.status_code == 200,
-        timeout=300,
-        poke_interval=30
+        python_callable=check_kafka_connect
     )
 
     # 2. Запуск Spark Streaming job
-    start_spark_streaming = SparkSubmitOperator(
+    start_spark_streaming = BashOperator(
         task_id='start_spark_streaming',
-        application='/opt/spark/jobs/streaming_processor.py',
-        conn_id='spark_default',
-        application_args=['--config', '/opt/spark/conf/streaming.conf'],
-        verbose=True
+        bash_command="""
+        /opt/bitnami/spark/bin/spark-submit \
+        --master spark://spark:7077 \
+        --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.3.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.1 \
+        --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
+        --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog \
+        --conf spark.sql.catalog.spark_catalog.type=hadoop \
+        --conf spark.sql.catalog.spark_catalog.warehouse=s3a://warehouse/ \
+        --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000 \
+        --conf spark.hadoop.fs.s3a.access.key=minioadmin \
+        --conf spark.hadoop.fs.s3a.secret.key=minioadmin \
+        --conf spark.hadoop.fs.s3a.path.style.access=true \
+        /opt/bitnami/spark/jobs/streaming_processor.py
+        """
     )
 
     # 3. Проверка dbt
@@ -94,11 +110,21 @@ with DAG(
     )
 
     # 5. Загрузка данных в ClickHouse
-    load_to_clickhouse = SparkSubmitOperator(
+    load_to_clickhouse = BashOperator(
         task_id='load_to_clickhouse',
-        application='/opt/spark/jobs/clickhouse_loader.py',
-        conn_id='spark_default',
-        verbose=True
+        bash_command="""
+        /opt/bitnami/spark/bin/spark-submit \
+        --master spark://spark:7077 \
+        --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.3.0,com.clickhouse:clickhouse-jdbc:0.4.6 \
+        --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
+        --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog \
+        --conf spark.sql.catalog.spark_catalog.type=hadoop \
+        --conf spark.sql.catalog.spark_catalog.warehouse=s3a://warehouse/ \
+        --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000 \
+        --conf spark.hadoop.fs.s3a.access.key=minioadmin \
+        --conf spark.hadoop.fs.s3a.secret.key=minioadmin \
+        /opt/bitnami/spark/jobs/clickhouse_loader.py
+        """
     )
 
     # 6. Запуск тестов качества данных

@@ -18,10 +18,12 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     ports:
       - "9092:9092"
 
@@ -44,13 +46,21 @@ services:
       - ./scripts/init/connectors:/kafka/connect
 
   minio-setup:
-    image: minio/mc
+    image: minio/mc:latest
     depends_on:
       - minio
-    volumes:
-      - ./scripts/setup:/scripts
     entrypoint: /bin/sh
-    command: -c "sleep 30 && /scripts/minio-setup.sh"
+    command: -c "
+        echo 'Waiting for MinIO...' &&
+        sleep 25 &&
+        mc alias set myminio http://minio:9000 minioadmin minioadmin &&
+        mc mb myminio/warehouse --ignore-existing &&
+        mc mb myminio/checkpoints --ignore-existing &&
+        mc mb myminio/temp --ignore-existing &&
+        mc anonymous set download myminio/warehouse &&
+        echo '✅ MinIO setup completed!'
+      "
+
   # MinIO (S3-совместимое хранилище)
   minio:
     image: minio/minio
@@ -59,50 +69,63 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9000:9000"
+      - "9222:9222"
       - "9001:9001"
     volumes:
       - minio_data:/data
 
   # Spark History Server
   spark-history:
-    image: bitnami/spark:3.4.1
+    image: apache/spark:3.4.1
+    container_name: spark-history
     depends_on:
       - spark
-    command: |
+    command: >
       bash -c "
-        /opt/bitnami/spark/sbin/start-history-server.sh &&
-        tail -f /opt/bitnami/spark/logs/spark--org.apache.spark.deploy.history.HistoryServer-*.log
+        /opt/spark/sbin/start-history-server.sh &&
+        echo 'Spark History Server started on port 18080' &&
+        while true; do sleep 60; done
       "
     ports:
       - "18080:18080"
+    environment:
+      SPARK_HISTORY_OPTS: "-Dspark.history.fs.logDirectory=file:/tmp/spark-events"
     volumes:
       - spark_history:/tmp/spark-events
-
   # Spark с поддержкой Iceberg
   spark:
-    build: ./spark
-    depends_on:
-      - kafka
-      - minio
-    environment:
-      - SPARK_MODE=master
+    image: apache/spark:3.4.1
+    container_name: spark-master
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+      -h spark
     ports:
-      - "8080:8080"
-      - "7077:7077"
+      - "8080:8080"  # Spark UI
+      - "7077:7077"  # Spark Master
+    environment:
+      - SPARK_LOCAL_IP=spark
     volumes:
       - ./spark/jobs:/opt/spark/jobs
+      - ./spark/data:/opt/spark/data
+      - ./spark/logs:/opt/spark/logs
 
   # Spark Worker
   spark-worker:
-    build: ./spark
+    image: apache/spark:3.4.1
+    container_name: spark-worker
     depends_on:
       - spark
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      spark://spark:7077
     environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark:7077
+      - SPARK_LOCAL_IP=spark-worker
+      - SPARK_WORKER_MEMORY=1g
+      - SPARK_WORKER_CORES=1
     volumes:
       - ./spark/jobs:/opt/spark/jobs
+      - ./spark/data:/opt/spark/data
+      - ./spark/logs:/opt/spark/logs
 
   # ClickHouse
   clickhouse:
@@ -128,13 +151,12 @@ services:
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
-      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
       - AIRFLOW__CORE__LOAD_EXAMPLES=false
-      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth
       - _AIRFLOW_DB_UPGRADE=true
       - _AIRFLOW_WWW_USER_CREATE=true
       - _AIRFLOW_WWW_USER_USERNAME=admin
       - _AIRFLOW_WWW_USER_PASSWORD=admin
+      - AIRFLOW__WEBSERVER__WORKERS=2
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/plugins:/opt/airflow/plugins
@@ -142,7 +164,12 @@ services:
     ports:
       - "8081:8080"
     command: >
-      bash -c "pip install -r /opt/airflow/requirements.txt && airflow webserver"
+      bash -c "
+          pip install -r /opt/airflow/requirements.txt &&
+          pip install 'apache-airflow-providers-apache-spark>=2.0.0,<3.0.0' || true &&
+          pip install 'apache-airflow-providers-http>=2.0.0,<3.0.0' || true &&
+          airflow webserver
+        "
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 30s
@@ -161,7 +188,12 @@ services:
       - ./airflow/plugins:/opt/airflow/plugins
       - ./airflow/requirements.txt:/opt/airflow/requirements.txt
     command: >
-      bash -c "pip install -r /opt/airflow/requirements.txt && airflow scheduler"
+      bash -c "
+          pip install -r /opt/airflow/requirements.txt &&
+          pip install 'apache-airflow-providers-apache-spark>=2.0.0,<3.0.0' || true &&
+          pip install 'apache-airflow-providers-http>=2.0.0,<3.0.0' || true &&
+          airflow scheduler
+        "
 
   # PostgreSQL для Airflow и источник данных
   postgres:
