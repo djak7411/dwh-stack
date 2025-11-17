@@ -1,0 +1,184 @@
+version: '3.8'
+
+services:
+  # Zookeeper (требуется для Kafka)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  # Kafka
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+
+  # Kafka Connect с Debezium
+  kafka-connect:
+    image: debezium/connect:2.3
+    depends_on:
+      - kafka
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: connect-cluster
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-status
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+    ports:
+      - "8083:8083"
+    volumes:
+      - ./scripts/init/connectors:/kafka/connect
+
+  minio-setup:
+    image: minio/mc
+    depends_on:
+      - minio
+    volumes:
+      - ./scripts/setup:/scripts
+    entrypoint: /bin/sh
+    command: -c "sleep 30 && /scripts/minio-setup.sh"
+  # MinIO (S3-совместимое хранилище)
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  # Spark History Server
+  spark-history:
+    image: bitnami/spark:3.4.1
+    depends_on:
+      - spark
+    command: |
+      bash -c "
+        /opt/bitnami/spark/sbin/start-history-server.sh &&
+        tail -f /opt/bitnami/spark/logs/spark--org.apache.spark.deploy.history.HistoryServer-*.log
+      "
+    ports:
+      - "18080:18080"
+    volumes:
+      - spark_history:/tmp/spark-events
+
+  # Spark с поддержкой Iceberg
+  spark:
+    build: ./spark
+    depends_on:
+      - kafka
+      - minio
+    environment:
+      - SPARK_MODE=master
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs
+
+  # Spark Worker
+  spark-worker:
+    build: ./spark
+    depends_on:
+      - spark
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark:7077
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs
+
+  # ClickHouse
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: password
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+  # Airflow
+  airflow-webserver:
+    image: apache/airflow:2.7.1
+    depends_on:
+      - spark
+      - clickhouse
+      - minio
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth
+      - _AIRFLOW_DB_UPGRADE=true
+      - _AIRFLOW_WWW_USER_CREATE=true
+      - _AIRFLOW_WWW_USER_USERNAME=admin
+      - _AIRFLOW_WWW_USER_PASSWORD=admin
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow/requirements.txt:/opt/airflow/requirements.txt
+    ports:
+      - "8081:8080"
+    command: >
+      bash -c "pip install -r /opt/airflow/requirements.txt && airflow webserver"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  airflow-scheduler:
+    image: apache/airflow:2.7.1
+    depends_on:
+      - airflow-webserver
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow/requirements.txt:/opt/airflow/requirements.txt
+    command: >
+      bash -c "pip install -r /opt/airflow/requirements.txt && airflow scheduler"
+
+  # PostgreSQL для Airflow и источник данных
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+      POSTGRES_MULTIPLE_DATABASES: airflow,source_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init/postgres:/docker-entrypoint-initdb.d
+
+volumes:
+  minio_data:
+  postgres_data:
+  clickhouse_data:
+  spark_history:

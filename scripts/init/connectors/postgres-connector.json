@@ -1,0 +1,24 @@
+{
+  "name": "postgres-source-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "airflow",
+    "database.password": "airflow",
+    "database.dbname": "source_db",
+    "database.server.name": "postgres-server",
+    "table.include.list": "public.customers,public.orders,public.payments",
+    "plugin.name": "pgoutput",
+    "slot.name": "debezium_slot",
+    "publication.name": "dbz_publication",
+    "transforms": "unwrap",
+    "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+    "transforms.unwrap.drop.tombstones": "false",
+    "transforms.unwrap.delete.handling.mode": "drop",
+    "heartbeat.interval.ms": "5000",
+    "max.batch.size": "2048",
+    "max.queue.size": "4096",
+    "poll.interval.ms": "5000"
+  }
+}

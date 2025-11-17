@@ -1,0 +1,21 @@
+country_code,country_name,region,continent,iso_alpha3,currency_code,currency_name,phone_code,gdp_category
+US,United States,North America,North America,USA,USD,US Dollar,1,High Income
+CA,Canada,North America,North America,CAN,CAD,Canadian Dollar,1,High Income
+MX,Mexico,North America,North America,MEX,MXN,Mexican Peso,52,Upper Middle Income
+GB,United Kingdom,Western Europe,Europe,GBR,GBP,British Pound,44,High Income
+DE,Germany,Western Europe,Europe,DEU,EUR,Euro,49,High Income
+FR,France,Western Europe,Europe,FRA,EUR,Euro,33,High Income
+IT,Italy,Southern Europe,Europe,ITA,EUR,Euro,39,High Income
+ES,Spain,Southern Europe,Europe,ESP,EUR,Euro,34,High Income
+RU,Russia,Eastern Europe,Europe,RUS,RUB,Russian Ruble,7,Upper Middle Income
+CN,China,East Asia,Asia,CHN,CNY,Chinese Yuan,86,Upper Middle Income
+JP,Japan,East Asia,Asia,JPN,JPY,Japanese Yen,81,High Income
+KR,South Korea,East Asia,Asia,KOR,KRW,South Korean Won,82,High Income
+IN,India,South Asia,Asia,IND,INR,Indian Rupee,91,Lower Middle Income
+SG,Singapore,Southeast Asia,Asia,SGP,SGD,Singapore Dollar,65,High Income
+AU,Australia,Australasia,Oceania,AUS,AUD,Australian Dollar,61,High Income
+BR,Brazil,South America,South America,BRA,BRL,Brazilian Real,55,Upper Middle Income
+AR,Argentina,South America,South America,ARG,ARS,Argentine Peso,54,Upper Middle Income
+ZA,South Africa,Southern Africa,Africa,ZAF,ZAR,South African Rand,27,Upper Middle Income
+NG,Nigeria,West Africa,Africa,NGA,NGN,Nigerian Naira,234,Lower Middle Income
+EG,Egypt,North Africa,Africa,EGY,EGP,Egyptian Pound,20,Lower Middle Income

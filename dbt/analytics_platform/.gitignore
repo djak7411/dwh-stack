@@ -1,0 +1,26 @@
+# dbt specific
+target/
+dbt_packages/
+logs/
+dbt.log
+
+# Profiles (NEVER commit!)
+profiles.yml
+*.profiles.yml
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
