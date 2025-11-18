@@ -1,5 +1,4 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import *
 
 def create_spark_session():
     return SparkSession.builder \
@@ -11,40 +10,42 @@ def create_spark_session():
         .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9222") \
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
         .config("spark.hadoop.fs.s3a.secret.key", "minioadmin") \
+        .config("spark.hadoop.fs.s3a.path.style.access", "true") \
         .getOrCreate()
 
 def load_to_clickhouse():
     spark = create_spark_session()
     
     # Чтение данных из Iceberg
-    customers_df = spark.table("spark_catalog.warehouse.customers")
-    orders_df = spark.table("spark_catalog.warehouse.orders")
+    customers_df = spark.read.format("iceberg").load("spark_catalog.warehouse.customers")
+    orders_df = spark.read.format("iceberg").load("spark_catalog.warehouse.orders")
     
-    # Трансформации для ClickHouse
-    enriched_orders = orders_df \
-        .join(customers_df, "id") \
-        .select(
-            col("orders.id").alias("order_id"),
-            col("orders.customer_id"),
-            col("customers.name").alias("customer_name"),
-            col("orders.amount"),
-            col("orders.status"),
-            col("orders.created_at"),
-            date_format(col("orders.created_at"), "yyyy-MM").alias("order_month")
-        )
+    print(f"Loaded {customers_df.count()} customers from Iceberg")
+    print(f"Loaded {orders_df.count()} orders from Iceberg")
     
-    # Запись в ClickHouse
-    enriched_orders.write \
+    # Запись в ClickHouse (пример)
+    customers_df.write \
         .format("jdbc") \
         .option("url", "jdbc:clickhouse://clickhouse:8123/analytics") \
-        .option("dbtable", "orders_enriched") \
+        .option("driver", "com.clickhouse.jdbc.ClickHouseDriver") \
+        .option("dbtable", "customers") \
         .option("user", "admin") \
         .option("password", "password") \
-        .option("driver", "com.clickhouse.jdbc.ClickHouseDriver") \
-        .mode("overwrite") \
+        .mode("append") \
         .save()
     
-    print("Data successfully loaded to ClickHouse!")
+    orders_df.write \
+        .format("jdbc") \
+        .option("url", "jdbc:clickhouse://clickhouse:8123/analytics") \
+        .option("driver", "com.clickhouse.jdbc.ClickHouseDriver") \
+        .option("dbtable", "orders") \
+        .option("user", "admin") \
+        .option("password", "password") \
+        .mode("append") \
+        .save()
+    
+    print("Data loaded to ClickHouse successfully!")
+    spark.stop()
 
 if __name__ == "__main__":
     load_to_clickhouse()

@@ -9,6 +9,8 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
+    networks:
+      - data-platform
 
   # Kafka
   kafka:
@@ -26,6 +28,8 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     ports:
       - "9092:9092"
+    networks:
+      - data-platform
 
   # Kafka Connect с Debezium
   kafka-connect:
@@ -44,6 +48,8 @@ services:
       - "8083:8083"
     volumes:
       - ./scripts/init/connectors:/kafka/connect
+    networks:
+      - data-platform
 
   minio-setup:
     image: minio/mc:latest
@@ -53,13 +59,15 @@ services:
     command: -c "
         echo 'Waiting for MinIO...' &&
         sleep 25 &&
-        mc alias set myminio http://minio:9000 minioadmin minioadmin &&
+        mc alias set myminio http://minio:9222 minioadmin minioadmin &&
         mc mb myminio/warehouse --ignore-existing &&
         mc mb myminio/checkpoints --ignore-existing &&
         mc mb myminio/temp --ignore-existing &&
         mc anonymous set download myminio/warehouse &&
         echo '✅ MinIO setup completed!'
       "
+    networks:
+      - data-platform
 
   # MinIO (S3-совместимое хранилище)
   minio:
@@ -73,6 +81,8 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
+    networks:
+      - data-platform
 
   # Spark History Server
   spark-history:
@@ -90,8 +100,11 @@ services:
       - "18080:18080"
     environment:
       SPARK_HISTORY_OPTS: "-Dspark.history.fs.logDirectory=file:/tmp/spark-events"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "supersecret"
     volumes:
       - spark_history:/tmp/spark-events
+    networks:
+      - data-platform
   # Spark с поддержкой Iceberg
   spark:
     image: apache/spark:3.4.1
@@ -104,10 +117,13 @@ services:
       - "7077:7077"  # Spark Master
     environment:
       - SPARK_LOCAL_IP=spark
+      - AIRFLOW__WEBSERVER__SECRET_KEY=supersecret
     volumes:
       - ./spark/jobs:/opt/spark/jobs
       - ./spark/data:/opt/spark/data
       - ./spark/logs:/opt/spark/logs
+    networks:
+      - data-platform
 
   # Spark Worker
   spark-worker:
@@ -122,10 +138,13 @@ services:
       - SPARK_LOCAL_IP=spark-worker
       - SPARK_WORKER_MEMORY=1g
       - SPARK_WORKER_CORES=1
+      - AIRFLOW__WEBSERVER__SECRET_KEY=supersecret
     volumes:
       - ./spark/jobs:/opt/spark/jobs
       - ./spark/data:/opt/spark/data
       - ./spark/logs:/opt/spark/logs
+    networks:
+      - data-platform
 
   # ClickHouse
   clickhouse:
@@ -140,6 +159,8 @@ services:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
       - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - data-platform
 
   # Airflow
   airflow-webserver:
@@ -151,16 +172,21 @@ services:
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      - AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS=false 
       - AIRFLOW__CORE__LOAD_EXAMPLES=false
       - _AIRFLOW_DB_UPGRADE=true
       - _AIRFLOW_WWW_USER_CREATE=true
       - _AIRFLOW_WWW_USER_USERNAME=admin
       - _AIRFLOW_WWW_USER_PASSWORD=admin
       - AIRFLOW__WEBSERVER__WORKERS=2
+      - AIRFLOW__WEBSERVER__SECRET_KEY=supersecret
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/plugins:/opt/airflow/plugins
       - ./airflow/requirements.txt:/opt/airflow/requirements.txt
+      - ./airflow/config:/opt/airflow/config
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./dbt:/opt/airflow/dbt
     ports:
       - "8081:8080"
     command: >
@@ -175,6 +201,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    networks:
+      - data-platform
 
   airflow-scheduler:
     image: apache/airflow:2.7.1
@@ -183,10 +211,13 @@ services:
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      - AIRFLOW__WEBSERVER__SECRET_KEY=supersecret
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/plugins:/opt/airflow/plugins
       - ./airflow/requirements.txt:/opt/airflow/requirements.txt
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./dbt:/opt/airflow/dbt
     command: >
       bash -c "
           pip install -r /opt/airflow/requirements.txt &&
@@ -194,23 +225,33 @@ services:
           pip install 'apache-airflow-providers-http>=2.0.0,<3.0.0' || true &&
           airflow scheduler
         "
+    networks:
+      - data-platform
 
   # PostgreSQL для Airflow и источник данных
   postgres:
     image: postgres:13
+    container_name: postgres
     environment:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: airflow
       POSTGRES_DB: airflow
       POSTGRES_MULTIPLE_DATABASES: airflow,source_db
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init/postgres:/docker-entrypoint-initdb.d
+    networks:
+      - data-platform
 
 volumes:
   minio_data:
   postgres_data:
   clickhouse_data:
   spark_history:
+
+networks:
+  data-platform:
+    driver: bridge
+    name: data-platform
