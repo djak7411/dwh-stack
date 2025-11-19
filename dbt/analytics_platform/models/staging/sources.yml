@@ -3,10 +3,20 @@ version: 2
 sources:
   - name: iceberg
     description: "Iceberg tables from Spark"
-    database: iceberg_catalog
+    database: local
     schema: analytics
     tables:
       - name: customers
         description: "Customers table from Iceberg"
       - name: orders
         description: "Orders table from Iceberg"
+        
+  - name: clickhouse_source
+    description: "Direct ClickHouse source tables"
+    database: analytics
+    schema: analytics
+    tables:
+      - name: customers
+        description: "Customers table in ClickHouse"
+      - name: orders
+        description: "Orders table in ClickHouse"

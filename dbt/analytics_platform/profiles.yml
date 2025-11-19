@@ -2,10 +2,13 @@ analytics_platform:
   target: dev
   outputs:
     dev:
-      type: spark
-      method: odbc
-      host: spark-master
-      port: 10000
-      database: iceberg_catalog
+      type: clickhouse
+      host: clickhouse
+      port: 9000
+      database: analytics
+      user: admin
+      password: password
       schema: analytics
-      auth: None
+      cluster: null
+      secure: false
+      verify: false

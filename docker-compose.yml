@@ -31,48 +31,65 @@ services:
     networks:
       - data-platform
 
-  # Kafka Connect с Debezium
-  kafka-connect:
-    image: debezium/connect:2.3
+  kafka-connect-init:
+    image: curlimages/curl:latest
     depends_on:
-      - kafka
-    environment:
-      BOOTSTRAP_SERVERS: kafka:9092
-      GROUP_ID: connect-cluster
-      CONFIG_STORAGE_TOPIC: connect-configs
-      OFFSET_STORAGE_TOPIC: connect-offsets
-      STATUS_STORAGE_TOPIC: connect-status
-      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
-      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
-    ports:
-      - "8083:8083"
-    volumes:
-      - ./scripts/init/connectors:/kafka/connect
-    networks:
-      - data-platform
-
-  minio-setup:
-    image: minio/mc:latest
-    depends_on:
-      - minio
-    entrypoint: /bin/sh
-    command: -c "
-        echo 'Waiting for MinIO...' &&
-        sleep 25 &&
-        mc alias set myminio http://minio:9222 minioadmin minioadmin &&
-        mc mb myminio/warehouse --ignore-existing &&
-        mc mb myminio/checkpoints --ignore-existing &&
-        mc mb myminio/temp --ignore-existing &&
-        mc anonymous set download myminio/warehouse &&
-        echo '✅ MinIO setup completed!'
+      - kafka-connect
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+        echo 'Waiting for Kafka Connect...' &&
+        until curl -s http://kafka-connect:8083/ > /dev/null; do 
+          sleep 5
+        done &&
+        echo 'Kafka Connect is running!' &&
+        echo 'Creating PostgreSQL connector...' &&
+        curl -X POST http://kafka-connect:8083/connectors -H 'Content-Type: application/json' -d '{\"name\": \"postgres-source-connector\",\"config\": {\"connector.class\": \"io.debezium.connector.postgresql.PostgresConnector\",\"database.hostname\": \"postgres\",\"database.port\": \"5432\",\"database.user\": \"airflow\",\"database.password\": \"airflow\",\"database.dbname\": \"source_db\",\"database.server.name\": \"postgres-server\",\"table.include.list\": \"public.customers\",\"plugin.name\": \"pgoutput\",\"slot.name\": \"debezium_slot\",\"publication.name\": \"dbz_publication\"}}' &&
+        echo 'Connector created!'
       "
     networks:
       - data-platform
 
-  # MinIO (S3-совместимое хранилище)
+  # Kafka Connect с Debezium
+  kafka-connect:
+    image: landoop/fast-data-dev:2.5.0
+    depends_on:
+      - kafka
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_GROUP_ID: connect-cluster
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    networks:
+      - data-platform
+
+  kafka-checker:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      - kafka-connect
+    command: |
+      bash -c "
+        echo 'Waiting for Kafka Connect to process data...' &&
+        sleep 30 &&
+        echo '=== KAFKA TOPICS ===' &&
+        kafka-topics --list --bootstrap-server kafka:9092 &&
+        echo '=== CHECKING DATA IN TOPICS ===' &&
+        echo 'Customers topic:' &&
+        kafka-console-consumer --bootstrap-server kafka:9092 --topic postgres-server.public.customers --from-beginning --max-messages 2 --timeout-ms 5000 2>/dev/null || echo 'No data yet' &&
+        echo 'Orders topic:' &&
+        kafka-console-consumer --bootstrap-server kafka:9092 --topic postgres-server.public.orders --from-beginning --max-messages 2 --timeout-ms 5000 2>/dev/null || echo 'No data yet'
+      "
+    networks:
+      - data-platform
+      
   minio:
-    image: minio/minio
-    command: server /data --console-address ":9001"
+    image: minio/minio:latest
+    command: server /data --console-address ":9001" --address ":9222"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -81,6 +98,31 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9222/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - data-platform
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+        echo 'Setting up MinIO...' &&
+        mc alias set myminio http://minio:9222 minioadmin minioadmin &&
+        mc mb myminio/warehouse --ignore-existing &&
+        mc mb myminio/checkpoints --ignore-existing &&
+        mc mb myminio/temp --ignore-existing &&
+        mc anonymous set download myminio/warehouse &&
+        echo '✅ MinIO setup completed!' &&
+        echo '=== Available buckets ===' &&
+        mc ls myminio/
+      "
     networks:
       - data-platform
 
@@ -246,6 +288,11 @@ services:
       POSTGRES_MULTIPLE_DATABASES: airflow,source_db
     ports:
       - "5433:5432"
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_wal_senders=10
+      -c max_replication_slots=10
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init/postgres:/docker-entrypoint-initdb.d
