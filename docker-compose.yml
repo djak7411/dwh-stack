@@ -106,35 +106,21 @@ services:
       - spark_history:/tmp/spark-events
     networks:
       - data-platform
+      
   # Spark с поддержкой Iceberg
+  # Spark с предустановленными пакетами
   spark:
-    image: apache/spark:3.4.1
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
     container_name: spark-master
-    user: root
-    command: >
-      bash -c "
-        # Создаем директории
-        mkdir -p /home/spark/.ivy2/{cache,jars} &&
-        chown -R spark:spark /home/spark/.ivy2 &&
-        
-        # Устанавливаем пакеты
-        echo 'Installing Spark packages...' &&
-        su spark -c '/opt/spark/bin/spark-shell \\
-          --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.3.0,org.apache.hadoop:hadoop-aws:3.3.4 \\
-          --repositories https://repo1.maven.org/maven2 \\
-          -e \"println(\\\"Packages installed\\\")\"' &&
-        
-        echo 'Starting Spark Master...' &&
-        # Запускаем Spark Master
-        su spark -c '/opt/spark/bin/spark-class org.apache.spark.deploy.master.Master -h spark'
-      "
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master -h spark
     ports:
-      - "8080:8080"  # Spark UI
-      - "7077:7077"  # Spark Master
+      - "8080:8080"
+      - "7077:7077"
     environment:
       - SPARK_LOCAL_IP=spark
       - AIRFLOW__WEBSERVER__SECRET_KEY=supersecret
-      - SPARK_PACKAGES=org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.3.0,org.apache.hadoop:hadoop-aws:3.3.4
     volumes:
       - ./spark/jobs:/opt/spark/jobs
       - ./spark/data:/opt/spark/data
@@ -142,26 +128,15 @@ services:
     networks:
       - data-platform
 
-  # Spark Worker
+  # Spark Worker с предустановленными пакетами
   spark-worker:
-    image: apache/spark:3.4.1
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
     container_name: spark-worker
-    user: root
     depends_on:
       - spark
-    command: >
-      bash -c "
-        # Устанавливаем пакеты с помощью spark-shell вместо spark-submit
-        echo 'Installing Spark packages...' &&
-        /opt/spark/bin/spark-shell \\
-          --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.3.0,org.apache.hadoop:hadoop-aws:3.3.4 \\
-          --repositories https://repo1.maven.org/maven2 \\
-          -e 'println(\"Packages installed successfully!\")' &&
-        
-        echo 'Starting Spark Worker...' &&
-        # Запускаем Spark Worker
-        /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark:7077
-      "
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark:7077
     environment:
       - SPARK_LOCAL_IP=spark-worker
       - SPARK_WORKER_MEMORY=1g
@@ -223,7 +198,7 @@ services:
           pip install -r /opt/airflow/requirements.txt &&
           pip install 'apache-airflow-providers-apache-spark>=2.0.0,<3.0.0' || true &&
           pip install 'apache-airflow-providers-http>=2.0.0,<3.0.0' || true &&
-          pip install 'dbt-core==1.5.0' 'dbt-clickhouse==1.5.0' &&
+          pip install 'dbt-core==1.5.0' 'dbt-clickhouse==1.5.0' dbt-spark==1.5.0 &&
           airflow webserver
         "
     healthcheck:
@@ -254,7 +229,7 @@ services:
           pip install -r /opt/airflow/requirements.txt &&
           pip install 'apache-airflow-providers-apache-spark>=2.0.0,<3.0.0' || true &&
           pip install 'apache-airflow-providers-http>=2.0.0,<3.0.0' || true &&
-          pip install dbt-core==1.5.0 dbt-clickhouse==1.5.0 &&
+          pip install dbt-core==1.5.0 dbt-clickhouse==1.5.0 dbt-spark==1.5.0 &&
           airflow scheduler
         "
     networks:

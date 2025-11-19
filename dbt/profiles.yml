@@ -2,13 +2,21 @@ analytics_platform:
   target: dev
   outputs:
     dev:
-      type: clickhouse
-      host: clickhouse
-      port: 9000
+      type: spark
+      method: http
+      host: spark-master
+      port: 10000
+      schema: iceberg_catalog
       database: analytics
-      schema: analytics
-      user: admin
-      password: password
-      secure: false
-      connect_timeout: 10
-      send_receive_timeout: 30
+      auth: None
+      server_side_parameters:
+        spark.sql.catalog.iceberg_catalog: org.apache.iceberg.spark.SparkCatalog
+        spark.sql.catalog.iceberg_catalog.type: hadoop
+        spark.sql.catalog.iceberg_catalog.warehouse: s3a://warehouse/
+        spark.hadoop.fs.s3a.endpoint: http://minio:9000
+        spark.hadoop.fs.s3a.access.key: minioadmin
+        spark.hadoop.fs.s3a.secret.key: minioadmin
+        spark.hadoop.fs.s3a.path.style.access: true
+      connect_retries: 3
+      connect_timeout: 60
+      retry_all: true

@@ -1,0 +1,14 @@
+[0m16:49:52.322732 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'start', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x78b4ab5aa460>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x78b4aa069e80>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x78b4aa069a90>]}
+
+
+============================== 16:49:52.328289 | b9663941-fd2f-4270-b84c-82fc8fc74a58 ==============================
+[0m16:49:52.328289 [info ] [MainThread]: Running with dbt=1.5.0
+[0m16:49:52.329073 [debug] [MainThread]: running dbt with arguments {'printer_width': '80', 'indirect_selection': 'eager', 'log_cache_events': 'False', 'write_json': 'True', 'partial_parse': 'True', 'cache_selected_only': 'False', 'warn_error': 'None', 'fail_fast': 'False', 'debug': 'False', 'log_path': 'logs', 'version_check': 'True', 'profiles_dir': '.', 'use_colors': 'True', 'use_experimental_parser': 'False', 'no_print': 'None', 'quiet': 'False', 'log_format': 'default', 'static_parser': 'True', 'introspect': 'True', 'warn_error_options': 'WarnErrorOptions(include=[], exclude=[])', 'target_path': 'None', 'send_anonymous_usage_stats': 'True'}
+[0m16:49:52.330158 [error] [MainThread]: Encountered an error:
+Runtime Error
+  No dbt_project.yml found at expected path ./dbt_project.yml
+  Verify that each entry within packages.yml (and their transitive dependencies) contains a file named dbt_project.yml
+  
+[0m16:49:52.331187 [debug] [MainThread]: Command `dbt source freshness` failed at 16:49:52.331022 after 0.02 seconds
+[0m16:49:52.331787 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'end', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x78b4ab5aa460>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x78b4aa069a90>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x78b4aa069a00>]}
+[0m16:49:52.332473 [debug] [MainThread]: Flushing usage events
