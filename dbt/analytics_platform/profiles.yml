@@ -1,0 +1,14 @@
+analytics_platform:
+  target: dev
+  outputs:
+    dev:
+      type: clickhouse
+      host: clickhouse
+      port: 9000
+      database: analytics
+      schema: analytics
+      user: admin
+      password: password
+      secure: false
+      connect_timeout: 10
+      send_receive_timeout: 30

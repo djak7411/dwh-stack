@@ -16,10 +16,6 @@ dbt_packages/
 manifest.json
 run_results.json
 
-# Профили (НИКОГДА не коммитить!)
-profiles.yml
-*.profiles.yml
-
 # Скрытые файлы OS
 .DS_Store
 
