@@ -12,3 +12,4 @@ analytics_platform:
       cluster: null
       secure: false
       verify: false
+      threads: 1

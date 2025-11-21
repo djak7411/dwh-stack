@@ -17,18 +17,23 @@ def check_kafka_for_new_data():
     """Проверяем наличие новых сообщений в Kafka топиках Debezium"""
     import subprocess
     import json
+    import logging
     
     try:
-        # Используем kafka-console-consumer для быстрой проверки
+        # Проверяем правильный топик
         result = subprocess.run([
             'docker', 'exec', 'dwh-stack-kafka-1',
             'kafka-console-consumer',
             '--bootstrap-server', 'localhost:9092',
-            '--topic', 'postgres.public.customers',
+            '--topic', 'postgres-server.public.customers', 
             '--max-messages', '1',
-            '--timeout-ms', '5000',
+            '--timeout-ms', '10000',  # Увеличиваем таймаут
             '--from-beginning'
-        ], capture_output=True, text=True, timeout=10)
+        ], capture_output=True, text=True, timeout=15)
+        
+        logging.info(f"Kafka check result: {result.returncode}")
+        logging.info(f"Kafka stdout: {result.stdout}")
+        logging.info(f"Kafka stderr: {result.stderr}")
         
         # Если есть вывод - есть новые данные
         if result.stdout and len(result.stdout.strip()) > 0:
@@ -39,9 +44,9 @@ def check_kafka_for_new_data():
             return False
             
     except Exception as e:
-        logging.warning(f"Kafka check issue: {e}")
+        logging.error(f"Kafka check issue: {e}")
         return False
-
+    
 with DAG(
     'auto_trigger_pipeline',
     default_args=default_args,
