@@ -236,7 +236,7 @@ services:
       - "8081:8080"
     command: >
       bash -c "
-          apt-get update && apt-get install -y git &&
+          apt-get update && apt-get install -y git -u root &&
           pip install -r /opt/airflow/requirements.txt &&
           pip install 'apache-airflow-providers-apache-spark>=2.0.0,<3.0.0' || true &&
           pip install 'apache-airflow-providers-http>=2.0.0,<3.0.0' || true &&
@@ -267,7 +267,7 @@ services:
       - ./dbt:/opt/airflow/dbt
     command: >
       bash -c "
-          apt-get update && apt-get install -y git &&
+          apt-get update && apt-get install -y git -u root &&
           pip install -r /opt/airflow/requirements.txt &&
           pip install 'apache-airflow-providers-apache-spark>=2.0.0,<3.0.0' || true &&
           pip install 'apache-airflow-providers-http>=2.0.0,<3.0.0' || true &&

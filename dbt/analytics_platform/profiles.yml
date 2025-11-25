@@ -1,7 +1,24 @@
 analytics_platform:
-  target: dev
+  target: clickhouse
   outputs:
-    dev:
+    # Для чтения из Iceberg через Spark
+    spark:
+      type: spark
+      method: http
+      host: spark
+      port: 8080
+      schema: analytics
+      organization: 0
+      connect_timeout: 60
+      connect_retries: 3
+      server_side_parameters:
+        spark.sql.catalog.local: org.apache.iceberg.spark.SparkCatalog
+        spark.sql.catalog.local.type: hadoop
+        spark.sql.catalog.local.warehouse: s3a://warehouse/analytics/
+        spark.sql.defaultCatalog: local
+      
+    # Для записи в ClickHouse  
+    clickhouse:
       type: clickhouse
       host: clickhouse
       port: 9000
@@ -9,7 +26,8 @@ analytics_platform:
       user: admin
       password: password
       schema: analytics
-      cluster: null
-      secure: false
-      verify: false
       threads: 1
+      connect_retries: 5
+      connect_timeout: 60
+      send_receive_timeout: 60
+      sync_request_timeout: 60

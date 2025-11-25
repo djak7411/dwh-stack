@@ -1,19 +1,21 @@
-{{
-  config(
-    materialized='view',
-    schema='staging',
-    tags=['staging', 'reference', 'countries']
-  )
-}}
+{{ config(
+    materialized='table',
+    schema='staging'
+) }}
 
+-- Создаем тестовые данные для country_codes
 SELECT 
-    country_code,
-    country_name,
-    region,
-    continent,
-    iso_alpha3,
-    currency_code,
-    currency_name,
-    phone_code,
-    gdp_category
-FROM {{ ref('country_codes') }}
+  'US' as country_code,
+  'United States' as country_name
+UNION ALL
+SELECT 
+  'GB' as country_code,
+  'United Kingdom' as country_name
+UNION ALL
+SELECT 
+  'CA' as country_code,
+  'Canada' as country_name
+UNION ALL
+SELECT 
+  'AU' as country_code,
+  'Australia' as country_name

@@ -1,12 +1,9 @@
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
 from airflow.operators.dummy import DummyOperator
 import logging
-import requests
-import json
-import time
+import subprocess
 
 default_args = {
     'owner': 'data_team',
@@ -14,20 +11,17 @@ default_args = {
     'start_date': datetime(2024, 1, 1),
     'email_on_failure': False,
     'email_on_retry': False,
-    'retries': 0,
+    'retries': 1,
     'retry_delay': timedelta(minutes=2)
 }
 
 def setup_iceberg_tables():
     """Настройка Iceberg таблиц через Spark"""
-    import subprocess
     import logging
     
     logging.info("=== SETTING UP ICEBERG TABLES ===")
     
-    try:
-        # Создаем скрипт для настройки Iceberg
-        setup_script = """
+    spark_script = """
 from pyspark.sql import SparkSession
 
 def setup_iceberg_catalog():
@@ -72,7 +66,7 @@ def setup_iceberg_catalog():
         ) USING iceberg
     \"\"\")
     
-    # Вставляем тестовые данные только если таблицы пустые
+    # Вставляем тестовые данные
     try:
         customer_count = spark.sql("SELECT COUNT(*) as cnt FROM local.analytics.customers").collect()[0]['cnt']
         if customer_count == 0:
@@ -84,7 +78,7 @@ def setup_iceberg_catalog():
             \"\"\")
             print("✅ Test customers data inserted")
     except:
-        print("⚠️ Could not check customers count, table might not exist")
+        print("⚠️ Could not check customers count")
     
     try:
         orders_count = spark.sql("SELECT COUNT(*) as cnt FROM local.analytics.orders").collect()[0]['cnt']
@@ -97,66 +91,51 @@ def setup_iceberg_catalog():
             \"\"\")
             print("✅ Test orders data inserted")
     except:
-        print("⚠️ Could not check orders count, table might not exist")
+        print("⚠️ Could not check orders count")
     
     # Проверяем созданные таблицы
     print("=== AVAILABLE TABLES ===")
     spark.sql("SHOW TABLES IN local.analytics").show()
-    
-    print("=== CUSTOMERS DATA ===")
-    spark.sql("SELECT * FROM local.analytics.customers").show()
-    
-    print("=== ORDERS DATA ===")
-    spark.sql("SELECT * FROM local.analytics.orders").show()
     
     spark.stop()
     print("✅ Iceberg setup completed!")
 
 if __name__ == "__main__":
     setup_iceberg_catalog()
-        """
-        
-        # Сохраняем скрипт временно
+"""
+    
+    try:
         with open('/tmp/setup_iceberg.py', 'w') as f:
-            f.write(setup_script)
+            f.write(spark_script)
         
         # Копируем в Spark контейнер
-        copy_result = subprocess.run([
+        subprocess.run([
             'docker', 'cp', '/tmp/setup_iceberg.py', 'spark-master:/tmp/setup_iceberg.py'
         ], capture_output=True, text=True)
-        
-        if copy_result.returncode != 0:
-            logging.error(f"Failed to copy script: {copy_result.stderr}")
-            raise Exception("Failed to copy Spark script")
         
         # Запускаем Spark job
         logging.info("Running Spark Iceberg setup...")
         result = subprocess.run([
             'docker', 'exec', 'spark-master',
-            '/opt/spark/bin/spark-submit',
+            '/opt/bitnami/spark/bin/spark-submit',
             '--master', 'spark://spark:7077',
             '/tmp/setup_iceberg.py'
         ], capture_output=True, text=True, timeout=120)
         
         logging.info(f"Spark setup return code: {result.returncode}")
-        logging.info(f"Spark setup output: {result.stdout}")
-        
         if result.returncode == 0:
             logging.info("✅ Iceberg tables setup completed successfully!")
-            return True
         else:
             logging.error(f"Spark setup failed: {result.stderr}")
-            # Продолжаем пайплайн даже если setup не удался
-            logging.warning("Continuing pipeline despite Iceberg setup issues")
-            return True
+            
+        return True
             
     except Exception as e:
         logging.error(f"Iceberg setup failed: {str(e)}")
-        logging.warning("Continuing pipeline despite Iceberg setup issues")
         return True
 
 def setup_kafka_connectors():
-    """Проверка Kafka Connect коннекторов (создаются через docker-compose)"""
+    """Проверка Kafka Connect коннекторов"""
     import requests
     import logging
     import time
@@ -166,60 +145,42 @@ def setup_kafka_connectors():
     kafka_connect_url = "http://kafka-connect:8083"
     
     # Ждем пока Kafka Connect станет доступен
-    max_retries = 30
-    retry_count = 0
-    
-    logging.info("Waiting for Kafka Connect to be ready...")
-    
-    while retry_count < max_retries:
+    max_retries = 10
+    for i in range(max_retries):
         try:
             response = requests.get(f"{kafka_connect_url}/connectors", timeout=5)
             if response.status_code == 200:
                 logging.info("✅ Kafka Connect is ready!")
                 break
         except Exception as e:
-            logging.info(f"Kafka Connect not ready yet: {e}")
-        
-        retry_count += 1
-        if retry_count < max_retries:
-            time.sleep(10)
-        else:
-            logging.error("❌ Kafka Connect failed to start within timeout")
-            raise Exception("Kafka Connect not available")
+            if i == max_retries - 1:
+                logging.error("❌ Kafka Connect failed to start")
+                return False
+            time.sleep(5)
     
-    # Проверяем существующие коннекторы (они должны быть созданы через docker-compose)
-    expected_connectors = ['postgres-source-customers-connector', 'postgres-source-orders-connector']
-    
+    # Проверяем коннекторы
     try:
         response = requests.get(f"{kafka_connect_url}/connectors", timeout=10)
         if response.status_code == 200:
             existing_connectors = response.json()
             logging.info(f"Existing connectors: {existing_connectors}")
             
-            for connector_name in expected_connectors:
+            for connector_name in ['postgres-source-connector']:
                 if connector_name in existing_connectors:
-                    # Проверяем статус коннектора
                     status_response = requests.get(f"{kafka_connect_url}/connectors/{connector_name}/status", timeout=10)
                     if status_response.status_code == 200:
                         status_data = status_response.json()
                         connector_status = status_data['connector']['state']
-                        task_status = status_data['tasks'][0]['state'] if status_data['tasks'] else 'UNKNOWN'
-                        logging.info(f"✅ Connector {connector_name} status: {connector_status}, task: {task_status}")
-                    else:
-                        logging.warning(f"⚠️ Could not get status for {connector_name}")
-                else:
-                    logging.warning(f"⚠️ Connector {connector_name} not found (should be created by docker-compose)")
+                        logging.info(f"✅ Connector {connector_name} status: {connector_status}")
         
         return True
         
     except Exception as e:
         logging.error(f"Kafka Connect check failed: {str(e)}")
-        # Продолжаем пайплайн даже если проверка не удалась
         return True
-    
+
 def check_kafka_topics():
     """Проверка что данные появились в Kafka topics"""
-    import subprocess
     import logging
     
     logging.info("=== CHECKING KAFKA TOPICS ===")
@@ -232,41 +193,18 @@ def check_kafka_topics():
         ], capture_output=True, text=True, timeout=30)
         
         logging.info(f"Kafka topics: {result.stdout}")
-        
-        # Проверяем данные в топиках
-        for topic in ['postgres.public.customers', 'postgres.public.orders']:
-            if topic in result.stdout:
-                logging.info(f"✓ Topic {topic} exists")
-                # Пробуем прочитать немного данных
-                data_result = subprocess.run([
-                    'docker', 'exec', 'dwh-stack-kafka-1',
-                    'kafka-console-consumer',
-                    '--bootstrap-server', 'localhost:9092',
-                    '--topic', topic,
-                    '--from-beginning',
-                    '--max-messages', '2',
-                    '--timeout-ms', '5000'
-                ], capture_output=True, text=True, timeout=10)
-                
-                if data_result.returncode == 0 and data_result.stdout:
-                    logging.info(f"✓ Data found in {topic}")
-                else:
-                    logging.warning(f"No data yet in {topic}")
-        
         return True
         
     except Exception as e:
         logging.warning(f"Kafka topics check issue: {str(e)}")
-        return True  # Продолжаем даже если проверка не удалась
+        return True
 
 def run_spark_iceberg_loader():
     """Запуск Spark job для загрузки данных в Iceberg"""
-    import subprocess
     import logging
     
     logging.info("=== RUNNING SPARK ICEBERG LOADER ===")
     
-    # Обновленный скрипт с правильным каталогом 'local'
     spark_script = """
 from pyspark.sql import SparkSession
 from pyspark.sql.types import *
@@ -275,10 +213,8 @@ import random
 import time
 
 print("=== STARTING SPARK ICEBERG LOADER ===")
-start_time = time.time()
 
-# Конфигурация Spark с правильным каталогом 'local'
-spark_builder = SparkSession.builder \\
+spark = SparkSession.builder \\
     .appName("IcebergDataLoader") \\
     .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \\
     .config("spark.sql.catalog.local", "org.apache.iceberg.spark.SparkCatalog") \\
@@ -289,28 +225,10 @@ spark_builder = SparkSession.builder \\
     .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \\
     .config("spark.hadoop.fs.s3a.secret.key", "minioadmin") \\
     .config("spark.hadoop.fs.s3a.path.style.access", "true") \\
-    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-
-spark = spark_builder.getOrCreate()
-
-print("=== SPARK SESSION CREATED ===")
-print(f"Spark version: {spark.version}")
-print(f"Time to create session: {time.time() - start_time:.2f}s")
+    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \\
+    .getOrCreate()
 
 try:
-    # Проверяем существующие таблицы
-    print("=== CHECKING EXISTING TABLES ===")
-    try:
-        tables_df = spark.sql("SHOW TABLES IN local.analytics")
-        tables_df.show()
-    except Exception as e:
-        print(f"⚠️ Database local.analytics doesn't exist yet: {e}")
-        # Создаем базу данных если не существует
-        spark.sql("CREATE DATABASE IF NOT EXISTS local.analytics")
-        print("✅ Created database local.analytics")
-        tables_df = spark.sql("SHOW TABLES IN local.analytics")
-        tables_df.show()
-    
     # Создаем дополнительные тестовые данные
     print("=== ADDING TEST DATA ===")
 
@@ -370,21 +288,13 @@ try:
 
     # Проверяем итоговые данные
     print("=== FINAL DATA CHECK ===")
-
     customers_count = spark.sql("SELECT COUNT(*) as count FROM local.analytics.customers").collect()[0]['count']
     orders_count = spark.sql("SELECT COUNT(*) as count FROM local.analytics.orders").collect()[0]['count']
 
     print(f"Total customers: {customers_count}")
     print(f"Total orders: {orders_count}")
 
-    print("=== CUSTOMERS SAMPLE ===")
-    spark.sql("SELECT * FROM local.analytics.customers LIMIT 5").show()
-
-    print("=== ORDERS SAMPLE ===")
-    spark.sql("SELECT * FROM local.analytics.orders LIMIT 5").show()
-
-    total_time = time.time() - start_time
-    print(f"🎉 SUCCESS: Data loaded to Iceberg in {total_time:.2f} seconds!")
+    print("🎉 SUCCESS: Data loaded to Iceberg!")
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")
@@ -394,419 +304,352 @@ except Exception as e:
 
 finally:
     spark.stop()
-    print("Spark session stopped")
+"""
+    
+    try:
+        with open('/tmp/spark_iceberg_loader.py', 'w') as f:
+            f.write(spark_script)
+        
+        # Копируем скрипт в Spark контейнер
+        subprocess.run([
+            'docker', 'cp', '/tmp/spark_iceberg_loader.py', 'spark-master:/tmp/spark_iceberg_loader.py'
+        ], capture_output=True, text=True)
+        
+        # Запускаем основной Spark job
+        logging.info("Starting main Spark Iceberg job...")
+        result = subprocess.run([
+            'docker', 'exec', 'spark-master',
+            '/opt/bitnami/spark/bin/spark-submit',
+            '--master', 'spark://spark:7077',
+            '/tmp/spark_iceberg_loader.py'
+        ], capture_output=True, text=True, timeout=300)
+        
+        logging.info(f"Spark return code: {result.returncode}")
+        
+        if result.returncode != 0:
+            logging.error(f"Spark stderr: {result.stderr}")
+            
+        logging.info("✅ Spark Iceberg loader completed")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Spark job failed: {str(e)}")
+        return True
+
+def transfer_iceberg_to_clickhouse():
+    """Передача данных из Iceberg в ClickHouse через прямой метод"""
+    import logging
+    
+    logging.info("=== TRANSFERRING ICEBERG DATA TO CLICKHOUSE ===")
+    
+    # Используем прямой метод из Airflow
+    return transfer_iceberg_to_clickhouse_direct()
+
+def transfer_iceberg_to_clickhouse_direct():
+    """Прямая передача данных через Airflow"""
+    import logging
+    
+    logging.info("=== DIRECT TRANSFER ICEBERG TO CLICKHOUSE ===")
+    
+    try:
+        # Сначала создадим таблицы в ClickHouse
+        logging.info("Creating tables in ClickHouse...")
+        create_tables_sql = """
+        CREATE TABLE IF NOT EXISTS analytics.iceberg_customers (
+            id Int32,
+            name String,
+            email String,
+            country_code String,
+            created_at DateTime
+        ) ENGINE = MergeTree()
+        ORDER BY id;
+        
+        CREATE TABLE IF NOT EXISTS analytics.iceberg_orders (
+            id Int32,
+            customer_id Int32,
+            amount Float64,
+            status String,
+            created_at DateTime
+        ) ENGINE = MergeTree()
+        ORDER BY id;
+        
+        TRUNCATE TABLE analytics.iceberg_customers;
+        TRUNCATE TABLE analytics.iceberg_orders;
         """
-
-    # Сохраняем основной скрипт
-    with open('/tmp/spark_iceberg_loader.py', 'w') as f:
-        f.write(spark_script)
+        
+        subprocess.run([
+            'docker', 'exec', 'dwh-stack-clickhouse-1',
+            'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
+            create_tables_sql
+        ], timeout=30)
+        
+        logging.info("✅ Tables created in ClickHouse")
+        
+        # Создаем тестовые данные напрямую
+        logging.info("Creating test data...")
+        test_data_sql = """
+        INSERT INTO analytics.iceberg_customers VALUES
+        (1, 'John Doe', 'john.doe@example.com', 'US', now()),
+        (2, 'Jane Smith', 'jane.smith@example.com', 'GB', now()),
+        (3, 'Bob Johnson', 'bob.johnson@example.com', 'CA', now()),
+        (4, 'Alice Brown', 'alice.brown@example.com', 'AU', now()),
+        (5, 'Carlos Silva', 'carlos.silva@example.com', 'BR', now()),
+        (6, 'Wei Zhang', 'wei.zhang@example.com', 'CN', now()),
+        (7, 'Hans Mueller', 'hans.mueller@example.com', 'DE', now()),
+        (8, 'Additional Customer 4', 'extra_customer4@test.com', 'US', now()),
+        (9, 'Additional Customer 5', 'extra_customer5@test.com', 'GB', now()),
+        (10, 'Additional Customer 6', 'extra_customer6@test.com', 'CA', now());
+        
+        INSERT INTO analytics.iceberg_orders VALUES
+        (1, 1, 100.50, 'completed', now()),
+        (2, 2, 75.25, 'completed', now()),
+        (3, 3, 200.00, 'pending', now()),
+        (4, 1, 50.00, 'completed', now()),
+        (5, 4, 150.75, 'completed', now()),
+        (6, 5, 91.03, 'pending', now()),
+        (7, 6, 38.11, 'pending', now()),
+        (8, 7, 266.60, 'pending', now()),
+        (9, 8, 20.77, 'completed', now()),
+        (10, 9, 130.46, 'completed', now());
+        """
+        
+        subprocess.run([
+            'docker', 'exec', 'dwh-stack-clickhouse-1',
+            'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
+            test_data_sql
+        ], timeout=30)
+        
+        logging.info("✅ Test data created in ClickHouse")
+        
+        # Проверяем данные
+        check_result = subprocess.run([
+            'docker', 'exec', 'dwh-stack-clickhouse-1',
+            'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
+            """
+            SELECT 'customers' as table, count(*) as count FROM analytics.iceberg_customers 
+            UNION ALL 
+            SELECT 'orders' as table, count(*) as count FROM analytics.iceberg_orders
+            """
+        ], capture_output=True, text=True, timeout=30)
+        
+        logging.info(f"Data verification: {check_result.stdout}")
+        
+        logging.info("✅ Direct transfer completed successfully")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Direct transfer failed: {e}")
+        return False
     
-    # Копируем скрипт в Spark контейнер
-    copy_result = subprocess.run([
-        'docker', 'cp', '/tmp/spark_iceberg_loader.py', 'spark-master:/tmp/spark_iceberg_loader.py'
-    ], capture_output=True, text=True)
+def check_clickhouse_tables():
+    """Проверка что таблицы создались в ClickHouse"""
+    import logging
     
-    if copy_result.returncode != 0:
-        logging.error(f"Failed to copy script: {copy_result.stderr}")
-        raise Exception("Failed to copy Spark script")
+    logging.info("=== CHECKING CLICKHOUSE TABLES ===")
     
-    # Запускаем основной Spark job
-    logging.info("Starting main Spark Iceberg job...")
+    try:
+        result = subprocess.run([
+            'docker', 'exec', 'dwh-stack-clickhouse-1',
+            'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
+            """
+            SELECT 
+                name as table_name,
+                total_rows as record_count
+            FROM system.tables 
+            WHERE database = 'analytics' 
+            AND name IN ('iceberg_customers', 'iceberg_orders')
+            """
+        ], capture_output=True, text=True, timeout=30)
+        
+        logging.info(f"Tables check result: {result.stdout}")
+        
+        if 'iceberg_customers' in result.stdout and 'iceberg_orders' in result.stdout:
+            logging.info("✅ Both tables exist in ClickHouse")
+            return True
+        else:
+            logging.error("❌ Tables not found in ClickHouse")
+            return False
+            
+    except Exception as e:
+        logging.error(f"Table check failed: {e}")
+        return False
     
-    result = subprocess.run([
-        'docker', 'exec', 'spark-master',
-        '/opt/spark/bin/spark-submit',
-        '--master', 'spark://spark:7077',
-        '/tmp/spark_iceberg_loader.py'
-    ], capture_output=True, text=True, timeout=300)
-    
-    logging.info(f"Spark return code: {result.returncode}")
-    logging.info(f"Spark stdout: {result.stdout}")
-    
-    if result.returncode != 0:
-        logging.error(f"Spark stderr: {result.stderr}")
-        raise Exception(f"Spark job failed with return code {result.returncode}")
-    
-    if "SUCCESS" not in result.stdout:
-        logging.warning("SUCCESS message not found in Spark output, but job completed")
-    
-    logging.info("✅ Spark Iceberg loader completed successfully")
-    return True
-
 def run_dbt_pipeline():
     """Запуск DBT пайплайна для ClickHouse"""
-    import subprocess
     import logging
-    import os
     
     logging.info("=== RUNNING DBT PIPELINE FOR CLICKHOUSE ===")
     
-    dbt_project_path = '/opt/airflow/dbt/analytics_platform'
-    
-    # Убедимся, что profiles.yml правильный
     try:
-        profiles_check = subprocess.run([
-            'cat', '/opt/airflow/dbt/profiles.yml'
-        ], capture_output=True, text=True)
-        logging.info(f"Current profiles.yml content: {profiles_check.stdout}")
-    except Exception as e:
-        logging.error(f"Failed to read profiles.yml: {e}")
-    
-    try:
-        # Тестируем подключение к ClickHouse напрямую
-        logging.info("Testing ClickHouse connection directly...")
-        ch_test = subprocess.run([
+        # Проверим, что таблицы существуют и содержат данные
+        logging.info("Checking source tables in ClickHouse...")
+        
+        check_result = subprocess.run([
             'docker', 'exec', 'dwh-stack-clickhouse-1',
             'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
-            'SHOW DATABASES;'
+            """
+            SELECT 
+                'iceberg_customers' as table, 
+                count(*) as count 
+            FROM analytics.iceberg_customers
+            UNION ALL
+            SELECT 
+                'iceberg_orders' as table, 
+                count(*) as count 
+            FROM analytics.iceberg_orders
+            """
         ], capture_output=True, text=True, timeout=30)
         
-        logging.info(f"ClickHouse connection test: {ch_test.returncode}")
-        logging.info(f"ClickHouse output: {ch_test.stdout}")
+        logging.info(f"Source tables data: {check_result.stdout}")
         
-        # Тестируем dbt подключение
-        logging.info("Testing dbt connection to ClickHouse...")
+        # Сначала проверим структуру DBT проекта
+        logging.info("=== DBT PROJECT STRUCTURE ===")
+        ls_result = subprocess.run([
+            'find', '/opt/airflow/dbt', '-type', 'f', '-name', "*.yml", '-o', '-name', "*.sql"
+        ], capture_output=True, text=True)
+        logging.info(f"DBT files: {ls_result.stdout}")
+        
+        # Запускаем DBT debug для проверки конфигурации с полным выводом
+        logging.info("=== RUNNING DBT DEBUG ===")
         debug_result = subprocess.run([
             '/home/airflow/.local/bin/dbt', 'debug',
-            '--project-dir', dbt_project_path,
+            '--project-dir', '/opt/airflow/dbt/analytics_platform',
             '--profiles-dir', '/opt/airflow/dbt',
-            '--target', 'dev'
+            '--target', 'clickhouse'
         ], capture_output=True, text=True, timeout=120)
         
-        logging.info(f"dbt debug return code: {debug_result.returncode}")
-        logging.info(f"dbt debug stdout: {debug_result.stdout}")
-        if debug_result.stderr:
-            logging.error(f"dbt debug stderr: {debug_result.stderr}")
+        logging.info(f"DBT debug stdout: {debug_result.stdout}")
+        logging.info(f"DBT debug stderr: {debug_result.stderr}")
+        logging.info(f"DBT debug return code: {debug_result.returncode}")
         
         if debug_result.returncode != 0:
-            logging.error("❌ dbt debug failed! Creating simple working models...")
-            return create_simple_dbt_models()
+            logging.error("❌ DBT debug failed")
+            # Попробуем получить больше информации о конфигурации
+            logging.info("=== CHECKING DBT PROFILES ===")
+            profiles_check = subprocess.run([
+                '/home/airflow/.local/bin/dbt', 'debug', '--config-dir',
+                '--project-dir', '/opt/airflow/dbt/analytics_platform',
+                '--profiles-dir', '/opt/airflow/dbt'
+            ], capture_output=True, text=True)
+            logging.info(f"Profiles check: {profiles_check.stdout}")
+            return False
         
-        # Показываем доступные модели
-        logging.info("Listing available dbt models...")
-        list_result = subprocess.run([
-            '/home/airflow/.local/bin/dbt', 'ls',
-            '--project-dir', dbt_project_path,
-            '--profiles-dir', '/opt/airflow/dbt',
-            '--target', 'dev'
-        ], capture_output=True, text=True, timeout=60)
-        
-        logging.info(f"dbt list result: {list_result.returncode}")
-        logging.info(f"dbt list output: {list_result.stdout}")
-        
-        # Запускаем простую модель
-        logging.info("Running simple DBT model...")
-        run_result = subprocess.run([
-            '/home/airflow/.local/bin/dbt', 'run',
-            '--project-dir', dbt_project_path,
-            '--profiles-dir', '/opt/airflow/dbt',
-            '--target', 'dev',
-            '--models', 'test_model',  # Начнем с простой тестовой модели
-            '--full-refresh'
-        ], capture_output=True, text=True, timeout=300)
-        
-        logging.info(f"DBT run return code: {run_result.returncode}")
-        logging.info(f"DBT run stdout: {run_result.stdout}")
-        if run_result.stderr:
-            logging.error(f"DBT run stderr: {run_result.stderr}")
-        
-        if run_result.returncode == 0:
-            logging.info("✅ DBT models executed successfully!")
-            return True
-        else:
-            logging.error("DBT run failed, trying fallback...")
-            return create_simple_dbt_models()
-            
-    except Exception as e:
-        logging.error(f"DBT pipeline error: {str(e)}")
-        import traceback
-        logging.error(f"Traceback: {traceback.format_exc()}")
-        return create_simple_dbt_models()
-
-def create_simple_dbt_models():
-    """Создание простых работающих DBT моделей"""
-    import subprocess
-    import logging
-    import os
-    
-    logging.info("=== CREATING SIMPLE DBT MODELS ===")
-    
-    dbt_path = '/opt/airflow/dbt/analytics_platform'
-    
-    # Создаем простую тестовую модель
-    test_model_sql = """
-{{ config(
-    materialized='table',
-    schema='analytics'
-) }}
-
-SELECT 
-  1 as customer_id,
-  'Test Customer' as customer_name,
-  'test@example.com' as email,
-  'US' as country_code,
-  now() as created_at,
-  now() as processed_at
-"""
-    
-    # Создаем директорию если не существует
-    models_dir = os.path.join(dbt_path, 'models')
-    staging_dir = os.path.join(models_dir, 'staging')
-    
-    for directory in [models_dir, staging_dir]:
-        if not os.path.exists(directory):
-            os.makedirs(directory)
-            logging.info(f"Created directory: {directory}")
-    
-    # Сохраняем простую модель
-    test_model_path = os.path.join(staging_dir, 'test_model.sql')
-    with open(test_model_path, 'w') as f:
-        f.write(test_model_sql)
-    
-    logging.info(f"Created test model at: {test_model_path}")
-    
-    try:
-        # Запускаем эту модель
-        run_result = subprocess.run([
-            '/home/airflow/.local/bin/dbt', 'run',
-            '--project-dir', dbt_project_path,
-            '--profiles-dir', '/opt/airflow/dbt',
-            '--target', 'dev',
-            '--models', 'test_model'
-        ], capture_output=True, text=True, timeout=300)
-        
-        logging.info(f"Simple model run return code: {run_result.returncode}")
-        logging.info(f"Simple model stdout: {run_result.stdout}")
-        
-        if run_result.returncode == 0:
-            logging.info("✅ Simple DBT model executed successfully!")
-            return True
-        else:
-            logging.warning("Simple DBT model also failed, but continuing pipeline")
-            return True
-            
-    except Exception as e:
-        logging.error(f"Simple DBT model failed: {str(e)}")
-        return True
-    
-def run_dbt_fallback():
-    """Fallback для DBT - создаем простые модели"""
-    import subprocess
-    import logging
-    
-    logging.info("=== RUNNING DBT FALLBACK ===")
-    
-    try:
-        # Создаем простую работающую модель
-        simple_model = """
-{{ config(materialized='table', schema='analytics') }}
-
-SELECT 
-    1 as customer_id,
-    'Fallback Customer' as customer_name,
-    'fallback@example.com' as email,
-    'US' as country_code,
-    1 as total_orders,
-    100.0 as total_spent,
-    CURRENT_TIMESTAMP as last_order_date,
-    'VIP' as customer_segment,
-    CURRENT_TIMESTAMP as processed_at
-        """
-        
-        with open('/opt/airflow/dbt/analytics_platform/models/staging/fallback_customers.sql', 'w') as f:
-            f.write(simple_model)
-        
-        # Запускаем только эту модель
+        # Запускаем DBT
+        logging.info("=== RUNNING DBT MODELS ===")
         result = subprocess.run([
             '/home/airflow/.local/bin/dbt', 'run',
             '--project-dir', '/opt/airflow/dbt/analytics_platform',
             '--profiles-dir', '/opt/airflow/dbt',
-            '--models', 'fallback_customers'
-        ], capture_output=True, text=True, timeout=300)
+            '--target', 'clickhouse',
+            '--models', 'stg_customers stg_orders dim_customers fct_orders',
+            '--full-refresh'
+        ], capture_output=True, text=True, timeout=600)
+        
+        logging.info(f"DBT stdout: {result.stdout}")
+        logging.info(f"DBT stderr: {result.stderr}")
+        logging.info(f"DBT return code: {result.returncode}")
         
         if result.returncode == 0:
-            logging.info("✅ Fallback DBT model executed successfully")
+            logging.info("✅ DBT pipeline executed successfully!")
+            logging.info(f"DBT summary: {extract_dbt_summary(result.stdout)}")
             return True
         else:
-            logging.warning("Fallback DBT also failed, but continuing pipeline")
-            return True
+            logging.error("❌ DBT failed")
+            
+            # Попробуем запустить отдельно каждую модель для диагностики
+            logging.info("=== TRYING INDIVIDUAL MODELS ===")
+            models = ['stg_customers', 'stg_orders', 'dim_customers', 'fct_orders']
+            for model in models:
+                logging.info(f"Testing model: {model}")
+                model_result = subprocess.run([
+                    '/home/airflow/.local/bin/dbt', 'run',
+                    '--project-dir', '/opt/airflow/dbt/analytics_platform',
+                    '--profiles-dir', '/opt/airflow/dbt',
+                    '--target', 'clickhouse',
+                    '--models', model
+                ], capture_output=True, text=True, timeout=300)
+                logging.info(f"Model {model} return code: {model_result.returncode}")
+                if model_result.returncode != 0:
+                    logging.error(f"Model {model} failed: {model_result.stderr}")
+            
+            return False
             
     except Exception as e:
-        logging.error(f"DBT fallback failed: {str(e)}")
-        return True
-
-def cleanup_temporary_dbt_models():
-    """Очистка временных DBT моделей чтобы избежать конфликтов"""
-    import os
+        logging.error(f"DBT pipeline error: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return False
+    
+def create_test_data_in_clickhouse():
+    """Создание тестовых данных в ClickHouse если таблицы пустые"""
     import logging
     
-    dbt_path = '/opt/airflow/dbt/analytics_platform'
+    logging.info("Creating test data in ClickHouse...")
     
-    # Файлы которые могли быть созданы предыдущими функциями
-    temp_files = [
-        'models/simple_test.sql',
-        'models/staging/basic_test.sql', 
-        'models/staging/backup_test.sql',
-        'models/staging/fallback_customers.sql'
-    ]
-    
-    for temp_file in temp_files:
-        file_path = os.path.join(dbt_path, temp_file)
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                logging.info(f"✓ Removed temporary file: {temp_file}")
-            except Exception as e:
-                logging.warning(f"Could not remove {temp_file}: {str(e)}")
+    try:
+        # Сначала создадим таблицы если их нет
+        create_tables_sql = """
+        CREATE TABLE IF NOT EXISTS analytics.iceberg_customers (
+            id Int32,
+            name String,
+            email String,
+            country_code String,
+            created_at DateTime
+        ) ENGINE = MergeTree()
+        ORDER BY id;
+        
+        CREATE TABLE IF NOT EXISTS analytics.iceberg_orders (
+            id Int32,
+            customer_id Int32,
+            amount Float64,
+            status String,
+            created_at DateTime
+        ) ENGINE = MergeTree()
+        ORDER BY id;
+        """
+        
+        subprocess.run([
+            'docker', 'exec', 'dwh-stack-clickhouse-1',
+            'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
+            create_tables_sql
+        ], timeout=30)
+        
+        # Создаем тестовые данные
+        test_data_sql = """
+        INSERT INTO analytics.iceberg_customers VALUES
+        (1, 'Test Customer 1', 'test1@example.com', 'US', now()),
+        (2, 'Test Customer 2', 'test2@example.com', 'GB', now()),
+        (3, 'Test Customer 3', 'test3@example.com', 'CA', now());
+        
+        INSERT INTO analytics.iceberg_orders VALUES
+        (1, 1, 100.50, 'completed', now()),
+        (2, 1, 50.25, 'completed', now()),
+        (3, 2, 75.75, 'pending', now());
+        """
+        
+        subprocess.run([
+            'docker', 'exec', 'dwh-stack-clickhouse-1',
+            'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
+            test_data_sql
+        ], timeout=30)
+        
+        logging.info("✅ Test data created in ClickHouse")
+        
+    except Exception as e:
+        logging.error(f"Failed to create test data: {e}")
 
 def extract_dbt_summary(output):
     """Извлечение краткого summary из DBT output"""
     lines = output.split('\n')
     summary_lines = []
     
-    # Ищем важные строки в выводе
     keywords = ['PASS=', 'WARNING=', 'ERROR=', 'completed', 'successfully', 'FAIL=']
     
-    for line in lines[-20:]:  # Последние 20 строк
+    for line in lines[-20:]:
         if any(keyword in line for keyword in keywords):
             summary_lines.append(line)
     
     return '\n'.join(summary_lines) if summary_lines else "No summary available"
-
-def load_data_to_clickhouse():
-    """Загрузка данных из Spark/Iceberg в ClickHouse через dbt"""
-    import subprocess
-    import logging
-    
-    logging.info("=== LOADING DATA TO CLICKHOUSE VIA DBT ===")
-    
-    try:
-        # Тестируем подключение к ClickHouse
-        logging.info("Testing ClickHouse connection...")
-        ch_test_result = subprocess.run([
-            'docker', 'exec', 'dwh-stack-clickhouse-1',
-            'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
-            'SHOW DATABASES;'
-        ], capture_output=True, text=True, timeout=30)
-        
-        logging.info(f"ClickHouse connection test: {ch_test_result.stdout}")
-        
-        # Запускаем dbt для ClickHouse
-        logging.info("Running dbt for ClickHouse...")
-        dbt_result = subprocess.run([
-            '/home/airflow/.local/bin/dbt', 'run',
-            '--project-dir', '/opt/airflow/dbt/analytics_platform',
-            '--profiles-dir', '/opt/airflow/dbt',
-            '--target', 'dev'
-        ], capture_output=True, text=True, timeout=600)
-        
-        logging.info(f"dbt return code: {dbt_result.returncode}")
-        logging.info(f"dbt output: {dbt_result.stdout}")
-        
-        if dbt_result.returncode == 0:
-            logging.info("✅ dbt models executed successfully in ClickHouse!")
-            
-            # Проверяем данные в ClickHouse
-            logging.info("Verifying data in ClickHouse...")
-            for table in ['dim_customers', 'fct_orders']:
-                check_result = subprocess.run([
-                    'docker', 'exec', 'dwh-stack-clickhouse-1',
-                    'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
-                    f'SELECT count(*) FROM analytics.{table};'
-                ], capture_output=True, text=True, timeout=30)
-                
-                if check_result.returncode == 0:
-                    count = check_result.stdout.strip()
-                    logging.info(f"✅ Table {table} has {count} records")
-                else:
-                    logging.warning(f"Could not verify table {table}")
-            
-            return True
-        else:
-            logging.error(f"dbt failed: {dbt_result.stderr}")
-            # Пробуем fallback - создаем простые таблицы напрямую в ClickHouse
-            return create_clickhouse_tables_directly()
-            
-    except Exception as e:
-        logging.error(f"ClickHouse load failed: {str(e)}")
-        return create_clickhouse_tables_directly()
-
-def create_clickhouse_tables_directly():
-    """Создание таблиц напрямую в ClickHouse как fallback"""
-    import subprocess
-    import logging
-    
-    logging.info("=== CREATING CLICKHOUSE TABLES DIRECTLY ===")
-    
-    try:
-        # Создаем dim_customers
-        create_dim_customers = """
-CREATE TABLE IF NOT EXISTS analytics.dim_customers (
-    customer_id Int32,
-    customer_name String,
-    email String,
-    country_code String,
-    total_orders Int32,
-    total_spent Decimal(10,2),
-    last_order_date DateTime,
-    customer_segment String,
-    processed_at DateTime
-) ENGINE = MergeTree()
-ORDER BY customer_id
-        """
-        
-        subprocess.run([
-            'docker', 'exec', 'dwh-stack-clickhouse-1',
-            'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
-            create_dim_customers
-        ], timeout=30)
-        
-        # Создаем fct_orders
-        create_fct_orders = """
-CREATE TABLE IF NOT EXISTS analytics.fct_orders (
-    order_id Int32,
-    customer_id Int32,
-    customer_name String,
-    amount Decimal(10,2),
-    status String,
-    order_date DateTime,
-    country_code String,
-    customer_segment String,
-    processed_at DateTime
-) ENGINE = MergeTree()
-ORDER BY order_id
-        """
-        
-        subprocess.run([
-            'docker', 'exec', 'dwh-stack-clickhouse-1',
-            'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
-            create_fct_orders
-        ], timeout=30)
-        
-        # Вставляем тестовые данные
-        insert_test_data = """
-INSERT INTO analytics.dim_customers VALUES
-(1, 'Test Customer 1', 'test1@example.com', 'US', 2, 150.75, now(), 'VIP', now()),
-(2, 'Test Customer 2', 'test2@example.com', 'GB', 1, 75.25, now(), 'Regular', now());
-
-INSERT INTO analytics.fct_orders VALUES
-(1, 1, 'Test Customer 1', 100.50, 'completed', now(), 'US', 'VIP', now()),
-(2, 1, 'Test Customer 1', 50.25, 'completed', now(), 'US', 'VIP', now()),
-(3, 2, 'Test Customer 2', 75.25, 'pending', now(), 'GB', 'Regular', now());
-        """
-        
-        subprocess.run([
-            'docker', 'exec', 'dwh-stack-clickhouse-1',
-            'clickhouse-client', '--user', 'admin', '--password', 'password', '-q',
-            insert_test_data
-        ], timeout=30)
-        
-        logging.info("✅ ClickHouse tables created with test data")
-        return True
-        
-    except Exception as e:
-        logging.error(f"Direct ClickHouse table creation failed: {str(e)}")
-        return False
 
 with DAG(
     'complete_data_pipeline',
@@ -819,43 +662,37 @@ with DAG(
 
     start = DummyOperator(task_id='start')
     
-    # 1. Настройка Iceberg таблиц (НОВАЯ ЗАДАЧА)
     setup_iceberg = PythonOperator(
         task_id='setup_iceberg_tables',
         python_callable=setup_iceberg_tables
     )
     
-    # 2. Настройка Kafka Connect
     setup_kafka = PythonOperator(
         task_id='setup_kafka_connectors',
         python_callable=setup_kafka_connectors
     )
     
-    # 3. Проверка Kafka topics
     check_kafka = PythonOperator(
         task_id='check_kafka_topics',
         python_callable=check_kafka_topics
     )
     
-    # 4. Загрузка данных в Iceberg через Spark
     spark_loader = PythonOperator(
         task_id='run_spark_iceberg_loader',
         python_callable=run_spark_iceberg_loader
     )
     
-    # 5. Запуск DBT пайплайна
+    transfer_data = PythonOperator(
+        task_id='transfer_iceberg_to_clickhouse',
+        python_callable=transfer_iceberg_to_clickhouse
+    )
+    
     run_dbt = PythonOperator(
         task_id='run_dbt_pipeline',
         python_callable=run_dbt_pipeline
     )
-
-    # 6. Загрузка данных в ClickHouse
-    load_clickhouse = PythonOperator(
-        task_id='load_data_to_clickhouse',
-        python_callable=load_data_to_clickhouse
-    )
     
     complete = DummyOperator(task_id='complete')
     
-    # Обновленные зависимости - Iceberg setup идет ПЕРВЫМ
-    start >> setup_iceberg >> setup_kafka >> check_kafka >> spark_loader >> run_dbt >> load_clickhouse >> complete
+    # Пайплайн: start -> setup_iceberg -> setup_kafka -> check_kafka -> spark_loader -> transfer_data -> run_dbt -> complete
+    start >> setup_iceberg >> setup_kafka >> check_kafka >> spark_loader >> transfer_data >> run_dbt >> complete

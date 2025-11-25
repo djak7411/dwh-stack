@@ -1,7 +1,18 @@
 analytics_platform:
-  target: dev
+  target: clickhouse
   outputs:
+    # Для чтения из Spark/Iceberg (используем HTTP метод)
     dev:
+      type: spark
+      method: http
+      host: spark
+      port: 8080
+      schema: analytics
+      organization: 0
+      connect_timeout: 60
+      connect_retries: 3
+      
+    clickhouse:
       type: clickhouse
       host: clickhouse
       port: 9000
@@ -9,7 +20,4 @@ analytics_platform:
       user: admin
       password: password
       schema: analytics
-      cluster: null
-      secure: false
-      verify: false
       threads: 1
