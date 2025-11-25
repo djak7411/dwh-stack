@@ -11,5 +11,5 @@ SELECT
   email,
   country_code,
   created_at,
-  CURRENT_TIMESTAMP as processed_at
+  now() as processed_at
 FROM {{ source('iceberg', 'customers') }}
